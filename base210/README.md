@@ -122,6 +122,25 @@ Python's `%` does this already; C/C++/Java/Rust `%` truncate toward zero, so add
 the modulus after a negative subtraction or the digits go negative and the
 result breaks.
 
+### The carry chain is a nested ladder of overflows
+
+The two intermediate carries in the odometer aren't separate machinery — each is
+the *same* overflow question asked in a larger CRT subsystem as one more modulus
+is folded in (`carry_ladder.py`):
+
+```
+k₀  = overflow mod 5    = [ ra₅ + rb₅ + c ≥ 5 ]                       (one channel — trivial)
+k₁  = overflow mod 30   = [ (a mod 30) + (b mod 30) + c ≥ 30 ]        (moduli 5,6)
+ovf = overflow mod 210  = [ a + b + c ≥ 210 ]                        (moduli 5,6,7)
+```
+
+with `a mod 30 = (6·r₅ + 25·r₆) mod 30` (CRT in the (5,6) subsystem; or a flat
+30-entry lookup). The moduli nest `5 ⊂ 30 ⊂ 210`, bottoming out at mod 5 where a
+single channel is already sorted. This is why the mid-computation reductions
+can't collapse into one non-conditional formula — each carry *is* a genuine
+magnitude-overflow, just one scale smaller. It's the self-similar plaid again:
+the same coarse-to-fine resolution as the digit-by-digit triangle assembly.
+
 The whole investigation lands on a tidy conclusion: the system needs **exactly
 one hard primitive — the carry/overflow** — and everything else (add, subtract,
 negate, compare) is free dial-arithmetic. *It was always the carry.*
@@ -136,6 +155,7 @@ negate, compare) is free dial-arithmetic. *It was always the carry.*
 | `order_proof.py`    | residue-lex vs mixed-radix-lex sort inversions; `x>y ⟺ mr(x)>mr(y)` |
 | `overflow.py`       | dial-mirror negation; `overflow(x + (210−y)) == (x≥y)` (uses CRT as a stand-in) |
 | `overflow_algo.py`  | the genuine odometer overflow/carry algorithm in small-digit ops (max 13) |
+| `carry_ladder.py`   | the carries are nested overflows: `ovf5 ⊂ ovf30 ⊂ ovf210`; low-part map `(6r₅+25r₆) mod 30` |
 | `figures_*.py`      | generate the figures in `figures/` |
 
 Run any script with `python3` (standard library only). Figure generators write
