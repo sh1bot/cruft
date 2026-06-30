@@ -53,7 +53,7 @@ def turn(cx,cy,th_a,th_b,va,vb):
     tot=th_a+th_b
     carry = tot>=360
     out.append(f'<text x="{cx}" y="{cy+108}" font-size="12" text-anchor="middle">{va}+{vb}: {th_a}+{th_b}={tot}deg</text>')
-    msg = f"≥360 -> CARRY, out {(tot-360)//12}" if carry else "<360 -> no carry"
+    msg = f"&#8805;360&#176; &#8594; CARRY, out {(tot-360)//12}" if carry else "&lt;360&#176; &#8594; no carry"
     out.append(f'<text x="{cx}" y="{cy+124}" font-size="12" text-anchor="middle" fill="{"#d23" if carry else "#1a7"}">{msg}</text>')
     return "\n".join(out)
 s.append(turn(220,470,120,96,10,8))      # 10+8=18 <30, no carry
