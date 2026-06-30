@@ -141,6 +141,25 @@ can't collapse into one non-conditional formula — each carry *is* a genuine
 magnitude-overflow, just one scale smaller. It's the self-similar plaid again:
 the same coarse-to-fine resolution as the digit-by-digit triangle assembly.
 
+### Carry by inspection: the angle between the dials
+
+In the (5,6) subsystem the carry has a purely geometric reading
+(`angles.py`, figure `figures/base210_dials.svg`). The two pointers drift apart
+by exactly **72° − 60° = 12° per unit**, so the relative offset
+
+```
+θ(a) = (72·r₅ − 60·r₆) mod 360 = 12° · (a mod 30)
+```
+
+*is* the mod-30 magnitude. Carry is then literally "the two gaps complete a full
+turn": `k₁ = 1 ⟺ θ(a) + θ(b) + 12°·c ≥ 360°` (verified for all `a,b,c`). Measure
+the offset consistently in one direction; the opposite direction gives `360° −
+θ`, which is the mirror/negation (`210 − y`). One caveat: read the *full* pointer
+gap, not just `d₁` — since `θ = 60·d₁ + 12·r₅`, judging by `d₁` alone (the 60°
+sector) is wrong in 60/900 boundary pairs. A physical pointer shows the full
+angle for free. (The whole base-210 digit generalises this: magnitude is the
+single angle `360°·a/210`, and carry is again angles passing a full turn.)
+
 The whole investigation lands on a tidy conclusion: the system needs **exactly
 one hard primitive — the carry/overflow** — and everything else (add, subtract,
 negate, compare) is free dial-arithmetic. *It was always the carry.*
@@ -156,6 +175,8 @@ negate, compare) is free dial-arithmetic. *It was always the carry.*
 | `overflow.py`       | dial-mirror negation; `overflow(x + (210−y)) == (x≥y)` (uses CRT as a stand-in) |
 | `overflow_algo.py`  | the genuine odometer overflow/carry algorithm in small-digit ops (max 13) |
 | `carry_ladder.py`   | the carries are nested overflows: `ovf5 ⊂ ovf30 ⊂ ovf210`; low-part map `(6r₅+25r₆) mod 30` |
+| `angles.py`         | the (5,6) carry as dial geometry: `θ = 12·(a mod 30)`, carry ⟺ angles ≥ 360° |
+| `figures_dials.py`  | renders `figures/base210_dials.svg` (the dial diagram) |
 | `figures_*.py`      | generate the figures in `figures/` |
 
 Run any script with `python3` (standard library only). Figure generators write
