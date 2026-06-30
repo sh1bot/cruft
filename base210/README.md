@@ -94,6 +94,34 @@ comparison — it still asks "did the sum reach 210?", the same magnitude questi
 (indistinguishable from 210, a full wrap), so `y = 0` is special-cased
 (everything ≥ 0).
 
+### The overflow algorithm itself
+
+`overflow_algo.py` gives the genuine procedure in small-digit operations
+(largest intermediate is **13**), rather than leaning on reconstruction:
+
+1. **residues → mixed-radix** `(d₀,d₁,d₂)` (Section 3 rules).
+2. **odometer add**, carrying at each sub-radix bound:
+
+```
+s₀ = a₀+b₀+c ;  out₀ = s₀ mod 5 ;  k₀ = s₀ ÷ 5     (carry the 1s at 5)
+s₁ = a₁+b₁+k₀;  out₁ = s₁ mod 6 ;  k₁ = s₁ ÷ 6     (carry the 5s at 6)
+s₂ = a₂+b₂+k₁;  out₂ = s₂ mod 7 ;  OVERFLOW = s₂ ÷ 7   (carry the 30s at 7)
+```
+
+`OVERFLOW` (0/1) is the carry into the next base-210 digit; the output digit is
+`(out₂,out₁,out₀)`. It needs the mixed-radix conversion — the same one
+comparison needs — which is the concrete proof that overflow ≡ comparison.
+(`overflow.py` shows the identity using CRT reconstruction as a stand-in;
+`overflow_algo.py` is the real small-digit algorithm.)
+
+**All mod is Euclidean** — results in `[0, modulus)`. A subtraction that goes
+negative wraps *up* (add the modulus, like turning a dial backwards past 0); an
+addition that reaches the modulus wraps *down* (subtract it). `d₁ = (r₅−r₆) mod
+6` and the `(r₇−r₅) mod 7` inside `d₂` are the operations that can go negative.
+Python's `%` does this already; C/C++/Java/Rust `%` truncate toward zero, so add
+the modulus after a negative subtraction or the digits go negative and the
+result breaks.
+
 The whole investigation lands on a tidy conclusion: the system needs **exactly
 one hard primitive — the carry/overflow** — and everything else (add, subtract,
 negate, compare) is free dial-arithmetic. *It was always the carry.*
@@ -106,7 +134,8 @@ negate, compare) is free dial-arithmetic. *It was always the carry.*
 | `compare.py`        | the subtraction-based mixed-radix digits; lexical compare == magnitude |
 | `compare_native.py` | comparison uses only small numbers (max 11); 86 % decided by `d₂` |
 | `order_proof.py`    | residue-lex vs mixed-radix-lex sort inversions; `x>y ⟺ mr(x)>mr(y)` |
-| `overflow.py`       | dial-mirror negation; `overflow(x + (210−y)) == (x≥y)` |
+| `overflow.py`       | dial-mirror negation; `overflow(x + (210−y)) == (x≥y)` (uses CRT as a stand-in) |
+| `overflow_algo.py`  | the genuine odometer overflow/carry algorithm in small-digit ops (max 13) |
 | `figures_*.py`      | generate the figures in `figures/` |
 
 Run any script with `python3` (standard library only). Figure generators write
