@@ -287,7 +287,12 @@ end
 
 -- Turn raw blob bytes into buffer lines, or nil if it looks binary.
 local function to_lines(data)
-  if data:sub(1, 8192):find("\0", 1, true) then
+  -- Binary guard, identical to git's own heuristic (buffer_is_binary): a NUL
+  -- byte within the first 8000 bytes.  We already hold the blob, so this needs
+  -- no extra git call; `git diff --numstat` would report the same thing (for
+  -- anything short of an explicit `binary` diff attribute) at the cost of
+  -- another process.
+  if data:sub(1, 8000):find("\0", 1, true) then
     return nil
   end
   local had_trailing_nl = data:sub(-1) == "\n"
