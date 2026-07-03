@@ -146,6 +146,35 @@ case "$out" in
   *) bad "outside repo :: $out" ;;
 esac
 
+# 11. loose subdir: cwd inside src/, non-qualified path HEAD:hello.c resolves
+out="$(cd "$WORK/src" && run_nvim \
+  'local b=vim.fn.bufnr("HEAD:hello.c"); io.write("OBJ="..tostring(vim.b[b].gitrev_object)..";TXT="..table.concat(vim.api.nvim_buf_get_lines(b,0,-1,false),"\n"))' \
+  'HEAD:hello.c')"
+case "$out" in
+  *'puts("v2")'*) ok "loose: HEAD:hello.c resolves from subdirectory" ;;
+  *) bad "subdir HEAD:hello.c :: $out" ;;
+esac
+
+# 12. regression: fully-qualified path from repo root still resolves
+out="$(cd "$WORK" && run_nvim \
+  'local b=vim.fn.bufnr("HEAD:src/hello.c"); io.write("TXT="..table.concat(vim.api.nvim_buf_get_lines(b,0,-1,false),"\n"))' \
+  'HEAD:src/hello.c')"
+case "$out" in
+  *'puts("v2")'*) ok "root-relative HEAD:src/hello.c still resolves from repo root" ;;
+  *) bad "root-relative regression :: $out" ;;
+esac
+
+# 13. loose subdir with an explicit subpath: from src/, HEAD:hello.c vs a
+#     deeper tree -- ensure a nested cwd-relative path resolves too.
+mkdir -p "$WORK/src/deep" && (cd "$WORK" && cat > src/deep/z.txt <<< 'zebra' && git add -A && git commit -qm z >/dev/null)
+out="$(cd "$WORK/src" && run_nvim \
+  'local b=vim.fn.bufnr("HEAD:deep/z.txt"); io.write("TXT="..table.concat(vim.api.nvim_buf_get_lines(b,0,-1,false),"\n"))' \
+  'HEAD:deep/z.txt')"
+case "$out" in
+  *'zebra'*) ok "loose: HEAD:deep/z.txt resolves relative to subdirectory cwd" ;;
+  *) bad "subdir nested path :: $out" ;;
+esac
+
 say ""
 say "$pass passed, $fail failed"
 [ "$fail" -eq 0 ]

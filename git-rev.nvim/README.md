@@ -48,6 +48,21 @@ In every case the revision **must actually resolve to a blob in the git repo**.
 If it does not — no such object, or you are not inside a repository — the plugin
 does nothing and Neovim goes on to create a normal new file with that name.
 
+### Paths are loose about your working directory
+
+Git's native `rev:path` resolves `path` relative to the **repo root**, which is
+surprising when you are sitting in a subdirectory. This plugin is loose about
+it: for a non-anchored path it first tries the path **relative to your current
+directory** (the way an ordinary filename behaves) and only then falls back to
+git's repo-root reading. So from `src/`:
+
+```vim
+:e HEAD:main.c        " finds src/main.c (cwd-relative), no need to type src/main.c
+:e HEAD:src/main.c    " still works from the repo root (root-relative fallback)
+```
+
+Anchor a path yourself with `./`, `../`, or a leading `/` to pin the meaning.
+
 ### Deducing the filename
 
 For forms 2 and 3 there is no path, so one is deduced from the surrounding
@@ -76,9 +91,11 @@ needed).
 ## Performance / robustness
 
 - No git is run for names that are not revision-shaped.
-- A revision that does not resolve costs a **single** `git cat-file
-  --batch-check`; a successful in-fill costs **two** git calls (the metadata
-  probe plus one blob read).
+- A successful in-fill costs **two** git calls: one `git cat-file --batch-check`
+  metadata probe, then one blob read (done only after the size guard passes, so
+  a huge blob is never read into memory). A miss costs a single probe — except
+  an explicit `rev:path` that is loosely retried both cwd- and root-relative,
+  which costs at most two probes.
 - Every git call is bounded by `timeout` (default 2000 ms) and driven through
   `jobstart` + `vim.wait`, so a slow or hung git can never freeze the editor.
 

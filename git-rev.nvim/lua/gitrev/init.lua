@@ -183,18 +183,35 @@ local function deduce_files(cur_buf, cur_names)
   return out
 end
 
--- Work out (dir, object, display_path) for a spec, or nil if we cannot.
---   * explicit path form (rev:path): resolve relative to cwd, git's own
---     semantics for `rev:path`.
+local function is_anchored(p)
+  return p:sub(1, 1) == "/" or p:sub(1, 2) == "./" or p:sub(1, 3) == "../"
+end
+
+-- Work out (dir, objects, display_path) for a spec, or nil if we cannot.
+-- `objects` is an ordered list of candidate `rev:path` strings to try until one
+-- resolves to a blob.
+--   * explicit path form (rev:path): git's native `rev:path` is resolved
+--     relative to the *repo root*, which is surprising from a subdirectory.  To
+--     be loose about it we first try the path relative to the current working
+--     directory (git's `rev:./path`, matching normal filename intuition) and
+--     only then fall back to git's repo-root-relative reading, so a
+--     fully-qualified path keeps working too.  A path the user already anchored
+--     with ./ ../ or / is taken as-is.
 --   * deduced form (bare rev / trailing colon): borrow a filename from a real
 --     file on the command line / in a sibling window, and address it relative
---     to that file's own directory using git's `rev:./name` syntax.  This keeps
---     us to a single git call with no separate repo-root computation.
+--     to that file's own directory using git's `rev:./name` syntax.  This works
+--     regardless of cwd and needs no separate repo-root computation.
 local function locate(spec, cur_buf, cur_names)
   if not spec.needs_path then
     local dir = vim.fn.getcwd()
-    local object = spec.rev .. ":" .. spec.path
-    return dir, object, spec.path
+    local p = spec.path
+    local objects
+    if is_anchored(p) then
+      objects = { spec.rev .. ":" .. p }
+    else
+      objects = { spec.rev .. ":./" .. p, spec.rev .. ":" .. p }
+    end
+    return dir, objects, p
   end
 
   local files = deduce_files(cur_buf, cur_names)
@@ -207,7 +224,7 @@ local function locate(spec, cur_buf, cur_names)
   -- `rev:./name` is resolved by git relative to its working directory (dir),
   -- so we do not need to compute the repo root ourselves.
   local object = spec.rev .. ":./" .. base
-  return dir, object, base
+  return dir, { object }, base
 end
 
 -- Turn raw blob bytes into buffer lines, or nil if it looks binary.
@@ -253,18 +270,28 @@ function M.try_infill(buf, cur_names)
     return false
   end
 
-  local dir, object, display_path = locate(spec, buf, cur_names)
+  local dir, objects, display_path = locate(spec, buf, cur_names)
   if not dir then
     return false
   end
 
-  -- Single metadata probe: existence + type + size (also fails fast when `dir`
-  -- is not inside a git repository).
-  local info = probe(dir, object)
-  if not info then
-    return false
+  -- Metadata probe: existence + type + size (also fails fast when `dir` is not
+  -- inside a git repository).  We try each candidate spelling of the path in
+  -- turn and keep the first that names a blob.  In the common case this is a
+  -- single git call; a subdirectory-relative miss may cost one extra probe.
+  local info, object
+  local tried = {}
+  for _, obj in ipairs(objects) do
+    if not tried[obj] then
+      tried[obj] = true
+      local i = probe(dir, obj)
+      if i and i.type == "blob" then
+        info, object = i, obj
+        break
+      end
+    end
   end
-  if info.type ~= "blob" then
+  if not info then
     return false
   end
   if info.size > M.config.max_size then
