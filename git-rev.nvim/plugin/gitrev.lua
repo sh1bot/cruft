@@ -9,6 +9,13 @@ if vim.g.loaded_gitrev then
 end
 vim.g.loaded_gitrev = 1
 
+-- gitrev needs vim.system (Neovim 0.10+).
+if not vim.system then
+  vim.notify("[gitrev] requires Neovim 0.10+ (vim.system); disabled",
+    vim.log.levels.WARN)
+  return
+end
+
 local group = vim.api.nvim_create_augroup("gitrev", { clear = true })
 
 vim.api.nvim_create_autocmd("BufNewFile", {

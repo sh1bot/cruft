@@ -99,11 +99,11 @@ needed).
   with a warning. The size is checked *before* the content is read, so a huge
   blob is never pulled into memory.
 - **Huge line counts**: even within `max_size`, a blob with more than
-  `max_lines` (default 500 000) lines is skipped. The blob is *streamed*, so the
-  read aborts the moment the cap is exceeded — it never builds the whole list.
+  `max_lines` (default 500 000) lines is skipped. Newlines are counted with an
+  early bail, so an over-cap blob is rejected before the line list is ever built.
 - **Binary files**: a blob containing a NUL byte is treated as binary and
   skipped (git's own signal; also required because a buffer line cannot contain
-  the newline a NUL would decode to).
+  a NUL/newline).
 - **Read-only**: in-filled buffers are `readonly` + `nomodifiable` and
   `buftype=nofile`, so the historical content can never be accidentally written
   back to a file literally named `HEAD^1`.
@@ -116,11 +116,10 @@ needed).
   a huge blob is never read into memory). A miss costs a single probe — except
   an explicit `rev:path` that is loosely retried both cwd- and root-relative,
   which costs at most two probes.
-- Every git call is bounded by `timeout` (default 2000 ms) and driven through
-  `jobstart` + `vim.wait`, so a slow or hung git can never freeze the editor.
-  The blob read is *streamed* (unbuffered) and accumulates lines as they
-  arrive, so the timeout, `max_lines`, and binary guards can all abort it
-  mid-read rather than after the whole blob is in memory.
+- Every git call goes through `vim.system` with a `timeout` (default 2000 ms),
+  so a slow or hung git can never freeze the editor. `vim.system` captures raw
+  bytes, so binary content is detected directly (a NUL byte) with no encoding
+  games, and the blob read only ever pulls a size-guarded blob into memory.
 
 ## Configuration
 
@@ -142,7 +141,7 @@ in a statusline or other tooling.
 
 ## Requirements
 
-- Neovim 0.9+
+- Neovim 0.10+ (for `vim.system`)
 - `git` on `PATH`
 
 ## Installation

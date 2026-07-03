@@ -11,9 +11,11 @@
 --   * Minimal external calls.  A successful in-fill costs two git invocations
 --     (one metadata probe, one blob read); a miss costs at most one (two when an
 --     explicit path is retried under a fallback interpretation).
---   * No stalls.  Every git call is bounded by a timeout and cannot hang the
---     editor, even on Neovim 0.9 which lacks `vim.system`.
---   * Guard against large and binary blobs.
+--   * No stalls.  Every git call goes through vim.system with a timeout, so a
+--     slow or hung git cannot freeze the editor.
+--   * Guard against large, binary, and huge-line-count blobs.
+--
+-- Requires Neovim 0.10+ (vim.system).
 
 local M = {}
 
@@ -104,7 +106,7 @@ function M.parse(name, opts)
 end
 
 --------------------------------------------------------------------------------
--- git layer (timeout-bounded, no shell -- every call is an argv list).
+-- git layer (vim.system: argv list -- no shell, raw bytes, first-class timeout).
 --------------------------------------------------------------------------------
 
 local function warn(msg)
@@ -113,63 +115,21 @@ local function warn(msg)
   end
 end
 
--- Run a command with a hard timeout, without a shell (list form).  Works on
--- Neovim 0.9+ by driving jobstart with vim.wait, so a slow/hung git can never
--- block the editor for longer than `timeout` ms.
---
--- Returns { code, timed_out, out } where `out` is jobstart's stdout line list:
--- the stream already split on real newlines.  Note the channel's quirk -- a
--- literal NUL byte in the stream is delivered as "\n" *inside* a line item (a
--- real newline is a split point, so it never appears within an item).  So the
--- list is exactly the file's lines, and a "\n" within any item marks a NUL.
-local function run(cmd, opts)
-  opts = opts or {}
-  local out = {}
-  local exit_code, done = nil, false
-
-  local ok, job = pcall(vim.fn.jobstart, cmd, {
-    stdout_buffered = true, -- one on_stdout call with the complete line list
-    on_stdout = function(_, data)
-      if data then
-        out = data
-      end
-    end,
-    on_exit = function(_, code)
-      exit_code = code
-      done = true
-    end,
-    env = { GIT_TERMINAL_PROMPT = "0", GIT_OPTIONAL_LOCKS = "0" },
-  })
-  if not ok or job <= 0 then
-    return { code = -1, timed_out = false, out = {} }
-  end
-
-  if opts.stdin then
-    pcall(vim.fn.chansend, job, opts.stdin)
-    pcall(vim.fn.chanclose, job, "stdin")
-  end
-
-  local finished = vim.wait(opts.timeout or M.config.timeout, function()
-    return done
-  end, 10)
-  if not finished then
-    pcall(vim.fn.jobstop, job)
-    return { code = -1, timed_out = true, out = out }
-  end
-  return { code = exit_code, timed_out = false, out = out }
-end
+local GIT_ENV = { GIT_TERMINAL_PROMPT = "0", GIT_OPTIONAL_LOCKS = "0" }
 
 -- Probe an object with a single `git cat-file --batch-check`.  Returns
--- { oid, type, size } or nil (missing / not a repo / timed out).
+-- { oid, type, size } or nil (missing / not a repo / timed out / errored).
 local function probe(dir, object)
-  local res = run({ "git", "-C", dir, "cat-file", "--batch-check" }, {
+  local res = vim.system({ "git", "-C", dir, "cat-file", "--batch-check" }, {
     stdin = object .. "\n",
-  })
-  if res.timed_out or res.code ~= 0 then
+    env = GIT_ENV,
+    timeout = M.config.timeout,
+  }):wait()
+  if res.code ~= 0 or not res.stdout then
     return nil
   end
   -- "<oid> <type> <size>" on success, "<object> missing" otherwise.
-  local oid, otype, size = vim.trim(res.out[1] or ""):match("^(%x+)%s+(%S+)%s+(%d+)$")
+  local oid, otype, size = vim.trim(res.stdout):match("^(%x+)%s+(%S+)%s+(%d+)$")
   if not oid then
     return nil
   end
@@ -177,72 +137,45 @@ local function probe(dir, object)
 end
 
 -- Read a blob's lines by oid, or nil on error/timeout/binary/too-many-lines.
---
--- This streams the blob (unbuffered jobstart) and accumulates lines as chunks
--- arrive, so we can stop early: `stdout_buffered` would build the entire list
--- before handing it over -- ignoring the timeout -- which for a pathological
--- blob is a multi-second stall.  jobstart splits the stream on real newlines,
--- so the chunks are the blob's lines; a "\n" *inside* a line item is a former
--- NUL byte (real newlines are split points), which is both git's binary signal
--- and, since a buffer line cannot contain a newline, a byte we must reject.
+-- vim.system captures stdout as raw bytes (NULs and all) and enforces the
+-- timeout itself, so we work on the exact content: reject on a NUL byte (git's
+-- binary signal, and a byte a buffer line cannot hold), bail past max_lines
+-- before splitting so a pathological blob never builds a giant list, then split.
 local function read_blob(dir, oid, object)
-  local lines = { "" }
-  local verdict, code, done, job = nil, nil, false, nil
-  local function stop(v)
-    verdict = v
-    pcall(vim.fn.jobstop, job)
-  end
-
-  local ok
-  ok, job = pcall(vim.fn.jobstart, { "git", "-C", dir, "cat-file", "blob", oid }, {
-    on_stdout = function(_, data)
-      if not data or verdict then
-        return
-      end
-      for i = 1, #data do
-        if data[i]:find("\n", 1, true) then -- a former NUL -> binary
-          return stop("binary")
-        end
-      end
-      lines[#lines] = lines[#lines] .. data[1] -- data[1] continues the last line
-      for i = 2, #data do
-        lines[#lines + 1] = data[i]
-      end
-      if #lines > M.config.max_lines then
-        return stop("toobig")
-      end
-    end,
-    on_exit = function(_, c)
-      code = c
-      done = true
-    end,
-    env = { GIT_TERMINAL_PROMPT = "0", GIT_OPTIONAL_LOCKS = "0" },
-  })
-  if not ok or job <= 0 then
+  local res = vim.system({ "git", "-C", dir, "cat-file", "blob", oid }, {
+    text = false,
+    env = GIT_ENV,
+    timeout = M.config.timeout,
+  }):wait()
+  if res.code ~= 0 or not res.stdout then
     return nil
   end
+  local data = res.stdout
 
-  local finished = vim.wait(M.config.timeout, function()
-    return done
-  end, 10)
-
-  if verdict == "binary" then
+  if data:find("\0", 1, true) then
     warn(object .. " looks binary; leaving as a new file")
     return nil
-  elseif verdict == "toobig" then
-    warn(string.format("%s exceeds max_lines (%d); leaving as a new file",
-      object, M.config.max_lines))
-    return nil
-  elseif not finished then
-    pcall(vim.fn.jobstop, job)
-    return nil
-  elseif code ~= 0 then
-    return nil
   end
 
+  -- Count newlines, bailing past the cap without building the line list.
+  local count, pos = 0, 0
+  while true do
+    pos = data:find("\n", pos + 1, true)
+    if not pos then
+      break
+    end
+    count = count + 1
+    if count > M.config.max_lines then
+      warn(string.format("%s exceeds max_lines (%d); leaving as a new file",
+        object, M.config.max_lines))
+      return nil
+    end
+  end
+
+  local lines = vim.split(data, "\n", { plain = true })
   -- git blobs normally end in "\n", giving a trailing empty item; drop it so we
   -- do not add a spurious blank final line (readfile semantics).
-  if #lines > 0 and lines[#lines] == "" then
+  if lines[#lines] == "" then
     lines[#lines] = nil
   end
   return lines

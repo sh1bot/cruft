@@ -39,8 +39,49 @@ int main(void) { puts("v2"); return 0; }
 EOF
 git add -A && git commit -qm v2
 
+# The plugin depends on vim.system (Neovim 0.10+).  This test box may only have
+# 0.9.x, so provide a faithful, test-only polyfill: raw bytes (NULs preserved
+# via jobstart's reversible NUL<->NL swap) and a vim.wait-based timeout.  Only
+# the subset gitrev uses is implemented.  Loaded before the plugin so its
+# vim.system guard passes and the real code path is exercised.
+SHIM="$WORK/shim.lua"
+cat > "$SHIM" <<'LUA'
+if not vim.system then
+  vim.system = function(cmd, opts)
+    opts = opts or {}
+    local chunks, code, done = {}, nil, false
+    local job = vim.fn.jobstart(cmd, {
+      stdout_buffered = true,
+      on_stdout = function(_, d)
+        if d then
+          for i = 1, #d do d[i] = d[i]:gsub("\n", "\0") end
+          chunks[#chunks + 1] = table.concat(d, "\n")
+        end
+      end,
+      on_exit = function(_, c) code, done = c, true end,
+      env = opts.env,
+    })
+    if opts.stdin then
+      vim.fn.chansend(job, opts.stdin)
+      vim.fn.chanclose(job, "stdin")
+    end
+    return {
+      wait = function(_, t)
+        local ok = vim.wait(t or opts.timeout or 10000, function() return done end, 10)
+        if not ok then
+          pcall(vim.fn.jobstop, job)
+          return { code = 124, stdout = table.concat(chunks, "") }
+        end
+        return { code = code, stdout = table.concat(chunks, "") }
+      end,
+    }
+  end
+end
+LUA
+
 MIN_INIT="$WORK/init.lua"
 cat > "$MIN_INIT" <<EOF
+dofile("$SHIM")
 vim.opt.runtimepath:prepend("$PLUGIN_ROOT")
 vim.opt.swapfile = false
 EOF
@@ -258,6 +299,7 @@ esac
 ( cd "$WORK" && seq 1 5000 > many.txt && git add -A && git commit -qm many >/dev/null )
 ML_INIT="$WORK/init_ml.lua"
 cat > "$ML_INIT" <<EOF
+dofile("$SHIM")
 vim.opt.runtimepath:prepend("$PLUGIN_ROOT")
 vim.opt.swapfile = false
 require('gitrev').setup({ max_lines = 100 })
