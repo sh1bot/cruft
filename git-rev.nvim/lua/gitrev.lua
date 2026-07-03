@@ -57,8 +57,8 @@ local function looks_hex(s, min_hex)
 end
 
 --- Parse a buffer name into a revision spec, or nil when it is not
---- revision-shaped.  Spec fields: rev (string), path (string|nil), needs_path
---- (bool), explicit (bool).
+--- revision-shaped.  Spec fields: rev (string) and path (string|nil); a nil
+--- path means the filename has to be deduced from context.
 function M.parse(name, opts)
   opts = opts or {}
   if type(name) ~= "string" or name == "" then
@@ -83,17 +83,17 @@ function M.parse(name, opts)
       if rev == "" then
         return nil
       end
-      return { rev = rev, path = nil, needs_path = true, explicit = true }
+      return { rev = rev, path = nil }
     end
     -- rev:path (git blob syntax); empty rev is git's index notation (:path).
-    return { rev = rev, path = path, needs_path = false, explicit = true }
+    return { rev = rev, path = path }
   end
 
   -- No colon: a revision only when hex, or carrying git revision punctuation.
   -- Plain tokens (HEAD, master, v1.2.3, README) are left alone; use "HEAD:" to
   -- force one of those.
   if looks_hex(name, opts.min_hex) or name:match(REV_PUNCT) then
-    return { rev = name, path = nil, needs_path = true, explicit = false }
+    return { rev = name, path = nil }
   end
   return nil
 end
@@ -267,7 +267,7 @@ end
 --   * deduced form -- borrow a filename from a real file on the command line /
 --     in a sibling window and address it relative to that file's own directory.
 local function locate(spec, cur_buf, cur_names)
-  if not spec.needs_path then
+  if spec.path then
     local cwd = vim.fn.getcwd()
     local p = spec.path
     local cands = { object_for_file(spec.rev, p) }

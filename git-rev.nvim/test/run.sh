@@ -69,23 +69,22 @@ local function want(name, w)
     okk = (s == nil)
   else
     okk = s ~= nil and eq(s.rev, w.rev) and eq(s.path, w.path)
-      and eq(s.needs_path, w.needs_path) and eq(s.explicit, w.explicit)
   end
   if not okk then bad = bad + 1; io.write("PARSE-FAIL " .. name .. "\n") end
 end
--- bare revisions with punctuation / hex -> deduce filename
-want("HEAD^1", { rev = "HEAD^1", path = nil, needs_path = true, explicit = false })
-want("HEAD~3", { rev = "HEAD~3", path = nil, needs_path = true, explicit = false })
-want("@{u}",   { rev = "@{u}",   path = nil, needs_path = true, explicit = false })
-want("deadbeef", { rev = "deadbeef", path = nil, needs_path = true, explicit = false })
-want("a1b2c3d",  { rev = "a1b2c3d",  path = nil, needs_path = true, explicit = false })
--- trailing colon (explicit deduce)
-want("HEAD:",   { rev = "HEAD",   path = nil, needs_path = true, explicit = true })
-want("HEAD^1:", { rev = "HEAD^1", path = nil, needs_path = true, explicit = true })
-want("v1.2.3:", { rev = "v1.2.3", path = nil, needs_path = true, explicit = true })
+-- bare revisions with punctuation / hex -> deduce filename (path = nil)
+want("HEAD^1",   { rev = "HEAD^1",   path = nil })
+want("HEAD~3",   { rev = "HEAD~3",   path = nil })
+want("@{u}",     { rev = "@{u}",     path = nil })
+want("deadbeef", { rev = "deadbeef", path = nil })
+want("a1b2c3d",  { rev = "a1b2c3d",  path = nil })
+-- trailing colon -> deduce filename (path = nil)
+want("HEAD:",   { rev = "HEAD",   path = nil })
+want("HEAD^1:", { rev = "HEAD^1", path = nil })
+want("v1.2.3:", { rev = "v1.2.3", path = nil })
 -- explicit rev:path
-want("HEAD:src/main.c", { rev = "HEAD", path = "src/main.c", needs_path = false, explicit = true })
-want(":staged.txt",     { rev = "",     path = "staged.txt", needs_path = false, explicit = true })
+want("HEAD:src/main.c", { rev = "HEAD", path = "src/main.c" })
+want(":staged.txt",     { rev = "",     path = "staged.txt" })
 -- names that must NOT be hijacked
 for _, s in ipairs({ "HEAD", "master", "README", "v1.2.3", "my-notes",
   "notes.txt", "Makefile", "dead", "fugitive:///x", "term://zsh",
