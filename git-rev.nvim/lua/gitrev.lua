@@ -22,6 +22,11 @@ M.config = {
   -- Maximum blob size to load, in bytes.  Larger blobs are skipped with a
   -- warning and the buffer falls through to normal new-file behaviour.
   max_size = 10 * 1024 * 1024,
+  -- Maximum number of lines to load.  Bounds the worst-case time to populate
+  -- the buffer for blobs that are within max_size but have a huge line count
+  -- (e.g. millions of tiny lines); the read is aborted as soon as it is
+  -- exceeded, so it costs nothing beyond one read buffer.
+  max_lines = 500000,
   -- Hard ceiling on how long any single git call may run, in milliseconds.
   timeout = 2000,
   -- Minimum length for a bare hex token to be treated as an object id.
@@ -171,28 +176,72 @@ local function probe(dir, object)
   return { oid = oid, type = otype, size = tonumber(size) }
 end
 
--- Read a blob's lines by oid, or nil on error/timeout/binary.  jobstart already
--- split stdout on real newlines, so `out` is the blob's lines; a "\n" *inside*
--- an item is a former NUL (real newlines are split points), which is git's
--- binary signal -- scanned over the first 8000 bytes like buffer_is_binary.
+-- Read a blob's lines by oid, or nil on error/timeout/binary/too-many-lines.
+--
+-- This streams the blob (unbuffered jobstart) and accumulates lines as chunks
+-- arrive, so we can stop early: `stdout_buffered` would build the entire list
+-- before handing it over -- ignoring the timeout -- which for a pathological
+-- blob is a multi-second stall.  jobstart splits the stream on real newlines,
+-- so the chunks are the blob's lines; a "\n" *inside* a line item is a former
+-- NUL byte (real newlines are split points), which is both git's binary signal
+-- and, since a buffer line cannot contain a newline, a byte we must reject.
 local function read_blob(dir, oid, object)
-  local res = run({ "git", "-C", dir, "cat-file", "blob", oid })
-  if res.timed_out or res.code ~= 0 then
+  local lines = { "" }
+  local verdict, code, done, job = nil, nil, false, nil
+  local function stop(v)
+    verdict = v
+    pcall(vim.fn.jobstop, job)
+  end
+
+  local ok
+  ok, job = pcall(vim.fn.jobstart, { "git", "-C", dir, "cat-file", "blob", oid }, {
+    on_stdout = function(_, data)
+      if not data or verdict then
+        return
+      end
+      for i = 1, #data do
+        if data[i]:find("\n", 1, true) then -- a former NUL -> binary
+          return stop("binary")
+        end
+      end
+      lines[#lines] = lines[#lines] .. data[1] -- data[1] continues the last line
+      for i = 2, #data do
+        lines[#lines + 1] = data[i]
+      end
+      if #lines > M.config.max_lines then
+        return stop("toobig")
+      end
+    end,
+    on_exit = function(_, c)
+      code = c
+      done = true
+    end,
+    env = { GIT_TERMINAL_PROMPT = "0", GIT_OPTIONAL_LOCKS = "0" },
+  })
+  if not ok or job <= 0 then
     return nil
   end
-  local lines, scanned = res.out, 0
-  for _, item in ipairs(lines) do
-    if item:find("\n", 1, true) then
-      warn(object .. " looks binary; leaving as a new file")
-      return nil
-    end
-    scanned = scanned + #item + 1 -- +1 for the newline that ended this item
-    if scanned >= 8000 then
-      break
-    end
+
+  local finished = vim.wait(M.config.timeout, function()
+    return done
+  end, 10)
+
+  if verdict == "binary" then
+    warn(object .. " looks binary; leaving as a new file")
+    return nil
+  elseif verdict == "toobig" then
+    warn(string.format("%s exceeds max_lines (%d); leaving as a new file",
+      object, M.config.max_lines))
+    return nil
+  elseif not finished then
+    pcall(vim.fn.jobstop, job)
+    return nil
+  elseif code ~= 0 then
+    return nil
   end
-  -- git blobs normally end in "\n", a trailing empty item; drop it so we do not
-  -- add a spurious blank final line (readfile semantics).
+
+  -- git blobs normally end in "\n", giving a trailing empty item; drop it so we
+  -- do not add a spurious blank final line (readfile semantics).
   if #lines > 0 and lines[#lines] == "" then
     lines[#lines] = nil
   end

@@ -98,8 +98,12 @@ needed).
 - **Large files**: blobs larger than `max_size` (default 10 MiB) are skipped
   with a warning. The size is checked *before* the content is read, so a huge
   blob is never pulled into memory.
-- **Binary files**: a blob containing a NUL byte in its first 8 KiB is treated
-  as binary and skipped.
+- **Huge line counts**: even within `max_size`, a blob with more than
+  `max_lines` (default 500 000) lines is skipped. The blob is *streamed*, so the
+  read aborts the moment the cap is exceeded — it never builds the whole list.
+- **Binary files**: a blob containing a NUL byte is treated as binary and
+  skipped (git's own signal; also required because a buffer line cannot contain
+  the newline a NUL would decode to).
 - **Read-only**: in-filled buffers are `readonly` + `nomodifiable` and
   `buftype=nofile`, so the historical content can never be accidentally written
   back to a file literally named `HEAD^1`.
@@ -114,6 +118,9 @@ needed).
   which costs at most two probes.
 - Every git call is bounded by `timeout` (default 2000 ms) and driven through
   `jobstart` + `vim.wait`, so a slow or hung git can never freeze the editor.
+  The blob read is *streamed* (unbuffered) and accumulates lines as they
+  arrive, so the timeout, `max_lines`, and binary guards can all abort it
+  mid-read rather than after the whole blob is in memory.
 
 ## Configuration
 
@@ -121,11 +128,12 @@ The plugin works with no configuration. To change defaults:
 
 ```lua
 require("gitrev").setup({
-  enabled  = true,
-  max_size = 10 * 1024 * 1024, -- bytes; larger blobs are skipped
-  timeout  = 2000,             -- ms; hard ceiling on any git call
-  min_hex  = 7,                -- min length for a bare hex token to be an id
-  notify   = true,            -- warn when a guard skips a blob
+  enabled   = true,
+  max_size  = 10 * 1024 * 1024, -- bytes; larger blobs are skipped
+  max_lines = 500000,           -- lines; blobs with more are skipped
+  timeout   = 2000,             -- ms; hard ceiling on any git call
+  min_hex   = 7,                -- min length for a bare hex token to be an id
+  notify    = true,             -- warn when a guard skips a blob
 })
 ```
 

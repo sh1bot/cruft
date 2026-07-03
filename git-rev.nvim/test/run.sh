@@ -253,6 +253,23 @@ case "$out" in
   *) bad "line reconstruction :: $out" ;;
 esac
 
+# 16. max_lines guard: a blob with more lines than the configured cap is
+#     skipped (streamed abort), leaving a normal new file.
+( cd "$WORK" && seq 1 5000 > many.txt && git add -A && git commit -qm many >/dev/null )
+ML_INIT="$WORK/init_ml.lua"
+cat > "$ML_INIT" <<EOF
+vim.opt.runtimepath:prepend("$PLUGIN_ROOT")
+vim.opt.swapfile = false
+require('gitrev').setup({ max_lines = 100 })
+EOF
+out="$(cd "$WORK" && nvim --headless -u "$ML_INIT" 'HEAD:many.txt' \
+  +"lua local b=vim.fn.bufnr('HEAD:many.txt'); io.write('mod='..tostring(vim.bo[b].modifiable)..' obj='..tostring(vim.b[b].gitrev_object))" \
+  +'qa!' 2>&1)"
+case "$out" in
+  *"mod=true"*"obj=nil"*) ok "max_lines guard skips a blob over the cap" ;;
+  *) bad "max_lines guard :: $out" ;;
+esac
+
 say ""
 say "$pass passed, $fail failed"
 [ "$fail" -eq 0 ]
