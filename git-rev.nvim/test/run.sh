@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
-# End-to-end tests for gitrev.nvim against a throwaway git repository.
+# Test suite for gitrev.nvim: parser unit checks + end-to-end scenarios.
 #
-# Requires: nvim, git.  Run from anywhere:  test/integration.sh
+# Requires: nvim, git.  Run from anywhere:  test/run.sh
 set -u
 
 PLUGIN_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
@@ -53,7 +53,57 @@ run_nvim() {
     +"lua $lua" +"qa!" 2>&1
 }
 
-# ---------------------------------------------------------------------------
+# ===========================================================================
+# Part 1: parser unit checks (M.parse -- pure, no git/filesystem).
+# Runs entirely inside one nvim; prints "PARSE-OK n" or "PARSE-FAIL ...".
+# ===========================================================================
+cat > "$WORK/parse_spec.lua" <<'LUA'
+local g = require("gitrev")
+local n, bad = 0, 0
+local function eq(a, b) return a == b end
+local function want(name, w)
+  n = n + 1
+  local s = g.parse(name)
+  local okk
+  if w == nil then
+    okk = (s == nil)
+  else
+    okk = s ~= nil and eq(s.rev, w.rev) and eq(s.path, w.path)
+      and eq(s.needs_path, w.needs_path) and eq(s.explicit, w.explicit)
+  end
+  if not okk then bad = bad + 1; io.write("PARSE-FAIL " .. name .. "\n") end
+end
+-- bare revisions with punctuation / hex -> deduce filename
+want("HEAD^1", { rev = "HEAD^1", path = nil, needs_path = true, explicit = false })
+want("HEAD~3", { rev = "HEAD~3", path = nil, needs_path = true, explicit = false })
+want("@{u}",   { rev = "@{u}",   path = nil, needs_path = true, explicit = false })
+want("deadbeef", { rev = "deadbeef", path = nil, needs_path = true, explicit = false })
+want("a1b2c3d",  { rev = "a1b2c3d",  path = nil, needs_path = true, explicit = false })
+-- trailing colon (explicit deduce)
+want("HEAD:",   { rev = "HEAD",   path = nil, needs_path = true, explicit = true })
+want("HEAD^1:", { rev = "HEAD^1", path = nil, needs_path = true, explicit = true })
+want("v1.2.3:", { rev = "v1.2.3", path = nil, needs_path = true, explicit = true })
+-- explicit rev:path
+want("HEAD:src/main.c", { rev = "HEAD", path = "src/main.c", needs_path = false, explicit = true })
+want(":staged.txt",     { rev = "",     path = "staged.txt", needs_path = false, explicit = true })
+-- names that must NOT be hijacked
+for _, s in ipairs({ "HEAD", "master", "README", "v1.2.3", "my-notes",
+  "notes.txt", "Makefile", "dead", "fugitive:///x", "term://zsh",
+  "C:/Users/me/f.txt", "D:\\a\\b.c" }) do
+  want(s, nil)
+end
+io.write("PARSE-OK " .. (n - bad) .. "/" .. n .. "\n")
+LUA
+pout="$(nvim --headless -u "$MIN_INIT" +"luafile $WORK/parse_spec.lua" +"qa!" 2>&1)"
+case "$pout" in
+  *"PARSE-FAIL"*) bad "parser: $pout" ;;
+  *"PARSE-OK "*) ok "parser unit checks (${pout##*PARSE-OK })" ;;
+  *) bad "parser produced no result :: $pout" ;;
+esac
+
+# ===========================================================================
+# Part 2: end-to-end scenarios against a real repo.
+# ===========================================================================
 # 1. diff-on-the-commandline: nvim -d src/hello.c HEAD^1  (deduced filename)
 out="$(cd "$WORK" && run_nvim \
   'local b=vim.fn.bufnr("HEAD^1"); io.write("RO="..tostring(vim.bo[b].readonly)..";FT="..vim.bo[b].filetype..";BT="..vim.bo[b].buftype..";TXT="..table.concat(vim.api.nvim_buf_get_lines(b,0,-1,false),"\n"))' \

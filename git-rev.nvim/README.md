@@ -149,9 +149,16 @@ lazy.nvim:
 Or drop the directory into your `runtimepath` (`packpath`) — it is a standard
 `plugin/` + `lua/` layout with no build step.
 
+## Layout
+
+```
+lua/gitrev.lua        the whole plugin (parser + git layer + in-fill logic)
+plugin/gitrev.lua     autoload shim: registers the BufNewFile autocmd
+test/run.sh           parser unit checks + end-to-end scenarios
+```
+
 ## Tests
 
 ```sh
-lua test/revspec_spec.lua   # pure-Lua unit tests for the name parser
-test/integration.sh         # end-to-end tests against a real repo (needs nvim)
+test/run.sh   # parser unit checks and end-to-end scenarios (needs nvim + git)
 ```
