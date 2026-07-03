@@ -187,31 +187,43 @@ local function is_anchored(p)
   return p:sub(1, 1) == "/" or p:sub(1, 2) == "./" or p:sub(1, 3) == "../"
 end
 
--- Work out (dir, objects, display_path) for a spec, or nil if we cannot.
--- `objects` is an ordered list of candidate `rev:path` strings to try until one
--- resolves to a blob.
+-- Address a real filesystem path as a git object relative to its own
+-- directory.  Returns { dir, object } where `dir` is the file's directory (so
+-- git discovers the repo that *contains the file*, not the one at cwd) and
+-- `object` is `rev:./<basename>`.
+local function object_for_file(rev, filepath)
+  local abs = vim.fn.fnamemodify(filepath, ":p")
+  return {
+    dir = vim.fn.fnamemodify(abs, ":h"),
+    object = rev .. ":./" .. vim.fn.fnamemodify(abs, ":t"),
+  }
+end
+
+-- Work out an ordered list of { dir, object } candidates for a spec, or nil if
+-- we cannot.  Each candidate is probed in turn until one resolves to a blob.
 --   * explicit path form (rev:path): git's native `rev:path` is resolved
---     relative to the *repo root*, which is surprising from a subdirectory.  To
---     be loose about it we first try the path relative to the current working
---     directory (git's `rev:./path`, matching normal filename intuition) and
---     only then fall back to git's repo-root-relative reading, so a
---     fully-qualified path keeps working too.  A path the user already anchored
---     with ./ ../ or / is taken as-is.
+--     relative to the *repo root* of git's working directory, which is
+--     surprising -- if cwd is not in a repo it fails even when the file plainly
+--     lives in one.  So we treat the path as an ordinary (cwd-relative)
+--     filename, resolve it to an absolute path, and let git discover the repo
+--     that contains that file.  We then fall back to git's repo-root-relative
+--     reading from cwd, so a path typed relative to the repo root from a
+--     subdirectory keeps working too.
 --   * deduced form (bare rev / trailing colon): borrow a filename from a real
---     file on the command line / in a sibling window, and address it relative
---     to that file's own directory using git's `rev:./name` syntax.  This works
---     regardless of cwd and needs no separate repo-root computation.
+--     file on the command line / in a sibling window and address it the same
+--     way, relative to that file's own directory.
 local function locate(spec, cur_buf, cur_names)
   if not spec.needs_path then
-    local dir = vim.fn.getcwd()
+    local cwd = vim.fn.getcwd()
     local p = spec.path
-    local objects
-    if is_anchored(p) then
-      objects = { spec.rev .. ":" .. p }
-    else
-      objects = { spec.rev .. ":./" .. p, spec.rev .. ":" .. p }
+    -- (1) cwd-relative filename; repo discovered from the file's own location.
+    local cands = { object_for_file(spec.rev, p) }
+    -- (2) git-native repo-root-relative from cwd (only meaningful when cwd is
+    --     itself inside a repo).  Skip for already-anchored paths.
+    if not is_anchored(p) then
+      cands[#cands + 1] = { dir = cwd, object = spec.rev .. ":" .. p }
     end
-    return dir, objects, p
+    return cands, p
   end
 
   local files = deduce_files(cur_buf, cur_names)
@@ -219,12 +231,8 @@ local function locate(spec, cur_buf, cur_names)
     return nil
   end
   local file = files[1]
-  local dir = vim.fn.fnamemodify(file, ":h")
-  local base = vim.fn.fnamemodify(file, ":t")
-  -- `rev:./name` is resolved by git relative to its working directory (dir),
-  -- so we do not need to compute the repo root ourselves.
-  local object = spec.rev .. ":./" .. base
-  return dir, { object }, base
+  local cand = object_for_file(spec.rev, file)
+  return { cand }, vim.fn.fnamemodify(file, ":t")
 end
 
 -- Turn raw blob bytes into buffer lines, or nil if it looks binary.
@@ -270,23 +278,24 @@ function M.try_infill(buf, cur_names)
     return false
   end
 
-  local dir, objects, display_path = locate(spec, buf, cur_names)
-  if not dir then
+  local candidates, display_path = locate(spec, buf, cur_names)
+  if not candidates then
     return false
   end
 
-  -- Metadata probe: existence + type + size (also fails fast when `dir` is not
-  -- inside a git repository).  We try each candidate spelling of the path in
-  -- turn and keep the first that names a blob.  In the common case this is a
-  -- single git call; a subdirectory-relative miss may cost one extra probe.
-  local info, object
+  -- Metadata probe: existence + type + size (also fails fast when the candidate
+  -- directory is not inside a git repository).  We try each candidate in turn
+  -- and keep the first that names a blob.  In the common case this is a single
+  -- git call; a fallback interpretation may cost one extra probe.
+  local info, object, dir
   local tried = {}
-  for _, obj in ipairs(objects) do
-    if not tried[obj] then
-      tried[obj] = true
-      local i = probe(dir, obj)
+  for _, c in ipairs(candidates) do
+    local key = c.dir .. "\0" .. c.object
+    if not tried[key] then
+      tried[key] = true
+      local i = probe(c.dir, c.object)
       if i and i.type == "blob" then
-        info, object = i, obj
+        info, object, dir = i, c.object, c.dir
         break
       end
     end

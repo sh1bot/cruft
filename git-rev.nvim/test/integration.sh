@@ -175,6 +175,22 @@ case "$out" in
   *) bad "subdir nested path :: $out" ;;
 esac
 
+# 14. explicit rev:path issued from OUTSIDE any repo: the repo must be
+#     discovered from the file's own location, not from cwd.
+OUTER="$(mktemp -d)"            # not a git repo
+mkdir -p "$OUTER/proj/sub"
+( cd "$OUTER/proj" && git init -q -b main \
+    && printf 'from-HEAD\n' > sub/f.txt && git add -A && git commit -qm one >/dev/null \
+    && printf 'working\n' > sub/f.txt )   # working tree differs from HEAD
+out="$(cd "$OUTER" && run_nvim \
+  'local b=vim.fn.bufnr("HEAD:proj/sub/f.txt"); io.write("OBJ="..tostring(vim.b[b].gitrev_object)..";RO="..tostring(vim.bo[b].readonly)..";TXT="..table.concat(vim.api.nvim_buf_get_lines(b,0,-1,false),"\n"))' \
+  'HEAD:proj/sub/f.txt')"
+rm -rf "$OUTER"
+case "$out" in
+  *"RO=true"*'from-HEAD'*) ok "explicit rev:path discovers repo from file location, not cwd" ;;
+  *) bad "explicit rev:path from outside repo :: $out" ;;
+esac
+
 say ""
 say "$pass passed, $fail failed"
 [ "$fail" -eq 0 ]

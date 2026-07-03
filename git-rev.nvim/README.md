@@ -50,18 +50,34 @@ does nothing and Neovim goes on to create a normal new file with that name.
 
 ### Paths are loose about your working directory
 
-Git's native `rev:path` resolves `path` relative to the **repo root**, which is
-surprising when you are sitting in a subdirectory. This plugin is loose about
-it: for a non-anchored path it first tries the path **relative to your current
-directory** (the way an ordinary filename behaves) and only then falls back to
-git's repo-root reading. So from `src/`:
+Git's native `rev:path` resolves `path` relative to the **repo root** of git's
+working directory, which is surprising: from a subdirectory the path is wrong,
+and if your cwd is not in a repo at all it fails outright — even when the file
+plainly lives in a repo somewhere else.
+
+This plugin treats the path the way an ordinary filename works instead. It
+resolves `path` to a real location relative to your current directory, then lets
+git discover the repository that **contains that file** (not the repo, if any,
+at your cwd). So all of these work:
 
 ```vim
-:e HEAD:main.c        " finds src/main.c (cwd-relative), no need to type src/main.c
-:e HEAD:src/main.c    " still works from the repo root (root-relative fallback)
+" cwd = repo/src
+:e HEAD:main.c              " finds src/main.c, no need to type src/main.c
+
+" cwd = repo root
+:e HEAD:src/main.c          " finds src/main.c
+
+" cwd = $HOME (not a repo at all), file lives under $HOME/project (a repo)
+:e HEAD:project/dir/file.txt   " discovers the repo at project/ and resolves it
 ```
 
-Anchor a path yourself with `./`, `../`, or a leading `/` to pin the meaning.
+It then falls back to git's repo-root-relative reading from cwd, so a path typed
+relative to the repo root from a subdirectory keeps working too. Anchor a path
+yourself with `./`, `../`, or a leading `/` to pin the meaning.
+
+The same rule powers the deduced forms: `:diffsplit HEAD:` while editing a file
+in a repo resolves against **that file's** repo, regardless of where your cwd
+is.
 
 ### Deducing the filename
 
