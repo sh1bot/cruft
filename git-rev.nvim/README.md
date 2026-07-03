@@ -1,0 +1,124 @@
+# gitrev.nvim
+
+Open a git revision as if it were a file.
+
+When you ask Neovim to edit a path that does not exist, this plugin checks
+whether the name looks like a **git revision**. If it does, and it resolves to a
+blob in the repository, the buffer is filled in with that blob's contents,
+marked **read-only**, and given the **filetype** (and therefore syntax
+highlighting) of the real file it stands in for.
+
+```sh
+nvim -d file.txt HEAD^1      # diff the working tree against file.txt @ HEAD^1
+```
+
+```vim
+:diffsplit HEAD^1            " diff the current file against its parent revision
+:e HEAD:src/main.c           " open src/main.c as it is at HEAD, read-only
+:e abc123:                   " open the current file at commit abc123
+```
+
+## How a name is interpreted
+
+The hard part is telling a *revision* apart from a *filename you are about to
+create*, without being annoying. The rules, cheapest first (no git is run until
+a name passes the syntactic gate):
+
+1. **`<rev>:<path>`** — the standard git blob syntax. Unambiguous.
+   e.g. `HEAD:Makefile`, `HEAD^1:src/main.c`, `abc123:a/b.txt`.
+   An empty `<rev>` means the index/staging area: `:staged.txt`.
+
+2. **`<rev>:`** (trailing colon) — the explicit *"this is a revision, work out
+   the filename for me"* marker. This is the baseline way to force revision
+   interpretation for a name that would otherwise look like a file.
+   e.g. `HEAD:`, `HEAD^1:`, `v1.2.3:`.
+
+3. **Bare `<rev>`** (no colon) — treated as a revision **only** when it is
+   clearly not an ordinary filename, i.e. it is either:
+   - a **hex** object id (7–64 hex digits, like git's own abbreviations), or
+   - contains a character git uses in revisions but filenames rarely do:
+     `^  ~  @  {  }`.
+
+   So `HEAD^1`, `HEAD~3`, `@{u}`, `main@{yesterday}`, and `deadbeef` are picked
+   up, while `HEAD`, `master`, `README`, `v1.2.3`, and `my-notes` are left
+   alone. To open one of *those* as a revision, add the trailing colon
+   (`HEAD:`).
+
+In every case the revision **must actually resolve to a blob in the git repo**.
+If it does not — no such object, or you are not inside a repository — the plugin
+does nothing and Neovim goes on to create a normal new file with that name.
+
+### Deducing the filename
+
+For forms 2 and 3 there is no path, so one is deduced from the surrounding
+context, in this order:
+
+1. the alternate file (`#`),
+2. another window in the current tab page,
+3. the argument list (this is what makes `nvim -d file.txt HEAD^1` work),
+4. any other loaded buffer.
+
+The first real, existing file found lends its name (addressed relative to its
+own directory via git's `rev:./name` syntax, so no repo-root computation is
+needed).
+
+## Safety
+
+- **Large files**: blobs larger than `max_size` (default 10 MiB) are skipped
+  with a warning. The size is checked *before* the content is read, so a huge
+  blob is never pulled into memory.
+- **Binary files**: a blob containing a NUL byte in its first 8 KiB is treated
+  as binary and skipped.
+- **Read-only**: in-filled buffers are `readonly` + `nomodifiable` and
+  `buftype=nofile`, so the historical content can never be accidentally written
+  back to a file literally named `HEAD^1`.
+
+## Performance / robustness
+
+- No git is run for names that are not revision-shaped.
+- A revision that does not resolve costs a **single** `git cat-file
+  --batch-check`; a successful in-fill costs **two** git calls (the metadata
+  probe plus one blob read).
+- Every git call is bounded by `timeout` (default 2000 ms) and driven through
+  `jobstart` + `vim.wait`, so a slow or hung git can never freeze the editor.
+
+## Configuration
+
+The plugin works with no configuration. To change defaults:
+
+```lua
+require("gitrev").setup({
+  enabled  = true,
+  max_size = 10 * 1024 * 1024, -- bytes; larger blobs are skipped
+  timeout  = 2000,             -- ms; hard ceiling on any git call
+  min_hex  = 7,                -- min length for a bare hex token to be an id
+  notify   = true,            -- warn when a guard skips a blob
+})
+```
+
+An in-filled buffer exposes `b:gitrev_object` (the resolved `rev:path`) for use
+in a statusline or other tooling.
+
+## Requirements
+
+- Neovim 0.9+
+- `git` on `PATH`
+
+## Installation
+
+With any plugin manager, point it at this directory. For example with
+lazy.nvim:
+
+```lua
+{ dir = "/path/to/git-rev.nvim" }
+```
+
+Or drop the directory into your `runtimepath` (`packpath`) — it is a standard
+`plugin/` + `lua/` layout with no build step.
+
+## Tests
+
+```sh
+lua test/revspec_spec.lua   # pure-Lua unit tests for the name parser
+test/integration.sh         # end-to-end tests against a real repo (needs nvim)
+```
