@@ -171,15 +171,32 @@ local function probe(dir, object)
   return { oid = oid, type = otype, size = tonumber(size) }
 end
 
--- Read a blob by oid, returning jobstart's line list (or nil on error/timeout).
--- No shell, no temp file, no byte reconstruction: the list is already the
--- blob's lines (see run() for the NUL-in-item quirk we exploit in to_lines).
-local function read_blob(dir, oid)
+-- Read a blob's lines by oid, or nil on error/timeout/binary.  jobstart already
+-- split stdout on real newlines, so `out` is the blob's lines; a "\n" *inside*
+-- an item is a former NUL (real newlines are split points), which is git's
+-- binary signal -- scanned over the first 8000 bytes like buffer_is_binary.
+local function read_blob(dir, oid, object)
   local res = run({ "git", "-C", dir, "cat-file", "blob", oid })
   if res.timed_out or res.code ~= 0 then
     return nil
   end
-  return res.out
+  local lines, scanned = res.out, 0
+  for _, item in ipairs(lines) do
+    if item:find("\n", 1, true) then
+      warn(object .. " looks binary; leaving as a new file")
+      return nil
+    end
+    scanned = scanned + #item + 1 -- +1 for the newline that ended this item
+    if scanned >= 8000 then
+      break
+    end
+  end
+  -- git blobs normally end in "\n", a trailing empty item; drop it so we do not
+  -- add a spurious blank final line (readfile semantics).
+  if #lines > 0 and lines[#lines] == "" then
+    lines[#lines] = nil
+  end
+  return lines
 end
 
 --------------------------------------------------------------------------------
@@ -277,33 +294,6 @@ local function locate(spec, cur_buf, cur_names)
   return { object_for_file(spec.rev, file) }, vim.fn.fnamemodify(file, ":t")
 end
 
--- Turn jobstart's stdout line list into buffer lines, or nil if it looks
--- binary.  The list is already the blob split on real newlines, so there is no
--- splitting to do -- we only spot NULs and trim the trailing-newline artifact.
---
--- Binary guard matching git's buffer_is_binary heuristic (a NUL within the
--- first 8000 bytes): a NUL byte is delivered as "\n" *inside* a line item (real
--- newlines are split points and never appear within an item), so a "\n" in any
--- item, scanned over the first 8000 bytes, means binary.
-local function to_lines(items)
-  local scanned = 0
-  for _, item in ipairs(items) do
-    if item:find("\n", 1, true) then
-      return nil
-    end
-    scanned = scanned + #item + 1 -- +1 for the newline that ended this item
-    if scanned >= 8000 then
-      break
-    end
-  end
-  -- git blobs normally end in "\n", which shows up as a trailing empty item;
-  -- drop it so we do not add a spurious blank final line (readfile semantics).
-  if #items > 0 and items[#items] == "" then
-    items[#items] = nil
-  end
-  return items
-end
-
 --------------------------------------------------------------------------------
 -- Core + entry point.
 --------------------------------------------------------------------------------
@@ -358,13 +348,8 @@ function M.try_infill(buf, cur_names)
     return false
   end
 
-  local raw = read_blob(dir, info.oid)
-  if raw == nil then
-    return false
-  end
-  local lines = to_lines(raw)
+  local lines = read_blob(dir, info.oid, object)
   if lines == nil then
-    warn(object .. " looks binary; leaving as a new file")
     return false
   end
 
