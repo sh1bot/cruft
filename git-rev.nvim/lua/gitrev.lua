@@ -99,7 +99,7 @@ function M.parse(name, opts)
 end
 
 --------------------------------------------------------------------------------
--- git layer (timeout-bounded, shell-free where it matters).
+-- git layer (timeout-bounded, no shell -- every call is an argv list).
 --------------------------------------------------------------------------------
 
 local function warn(msg)
@@ -110,7 +110,10 @@ end
 
 -- Run a command with a hard timeout, without a shell (list form).  Works on
 -- Neovim 0.9+ by driving jobstart with vim.wait, so a slow/hung git can never
--- block the editor for longer than `timeout` ms.
+-- block the editor for longer than `timeout` ms.  Returns byte-exact stdout,
+-- including NUL bytes: jobstart splits the stream on real newlines and delivers
+-- NUL bytes as "\n" inside each item, so recovering NULs (per item) and then
+-- rejoining on "\n" reconstructs the original bytes exactly.
 local function run(cmd, opts)
   opts = opts or {}
   local chunks = {}
@@ -120,6 +123,9 @@ local function run(cmd, opts)
     stdout_buffered = true,
     on_stdout = function(_, data)
       if data then
+        for i = 1, #data do
+          data[i] = data[i]:gsub("\n", "\0")
+        end
         chunks[#chunks + 1] = table.concat(data, "\n")
       end
     end,
@@ -165,29 +171,14 @@ local function probe(dir, object)
   return { oid = oid, type = otype, size = tonumber(size) }
 end
 
--- Read a blob by oid into a Lua string, preserving bytes exactly (including
--- NULs) by routing through a temp file rather than a captured channel.  The oid
--- is pure hex, so shell interpolation is safe here.
+-- Read a blob by oid into a Lua string (bytes exact, NULs preserved).  No
+-- shell, no temp file -- run() reconstructs the raw bytes from the channel.
 local function read_blob(dir, oid)
-  local tmp = vim.fn.tempname()
-  local shell = string.format(
-    "git -C %s cat-file blob %s > %s",
-    vim.fn.shellescape(dir), oid, vim.fn.shellescape(tmp)
-  )
-  local res = run({ "sh", "-c", shell })
+  local res = run({ "git", "-C", dir, "cat-file", "blob", oid })
   if res.timed_out or res.code ~= 0 then
-    pcall(vim.fn.delete, tmp)
     return nil
   end
-  local f = io.open(tmp, "rb")
-  if not f then
-    pcall(vim.fn.delete, tmp)
-    return nil
-  end
-  local data = f:read("*a")
-  f:close()
-  pcall(vim.fn.delete, tmp)
-  return data
+  return res.stdout
 end
 
 --------------------------------------------------------------------------------
