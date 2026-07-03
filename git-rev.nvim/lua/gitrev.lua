@@ -110,23 +110,23 @@ end
 
 -- Run a command with a hard timeout, without a shell (list form).  Works on
 -- Neovim 0.9+ by driving jobstart with vim.wait, so a slow/hung git can never
--- block the editor for longer than `timeout` ms.  Returns byte-exact stdout,
--- including NUL bytes: jobstart splits the stream on real newlines and delivers
--- NUL bytes as "\n" inside each item, so recovering NULs (per item) and then
--- rejoining on "\n" reconstructs the original bytes exactly.
+-- block the editor for longer than `timeout` ms.
+--
+-- Returns { code, timed_out, out } where `out` is jobstart's stdout line list:
+-- the stream already split on real newlines.  Note the channel's quirk -- a
+-- literal NUL byte in the stream is delivered as "\n" *inside* a line item (a
+-- real newline is a split point, so it never appears within an item).  So the
+-- list is exactly the file's lines, and a "\n" within any item marks a NUL.
 local function run(cmd, opts)
   opts = opts or {}
-  local chunks = {}
+  local out = {}
   local exit_code, done = nil, false
 
   local ok, job = pcall(vim.fn.jobstart, cmd, {
-    stdout_buffered = true,
+    stdout_buffered = true, -- one on_stdout call with the complete line list
     on_stdout = function(_, data)
       if data then
-        for i = 1, #data do
-          data[i] = data[i]:gsub("\n", "\0")
-        end
-        chunks[#chunks + 1] = table.concat(data, "\n")
+        out = data
       end
     end,
     on_exit = function(_, code)
@@ -136,7 +136,7 @@ local function run(cmd, opts)
     env = { GIT_TERMINAL_PROMPT = "0", GIT_OPTIONAL_LOCKS = "0" },
   })
   if not ok or job <= 0 then
-    return { code = -1, stdout = "", timed_out = false }
+    return { code = -1, timed_out = false, out = {} }
   end
 
   if opts.stdin then
@@ -149,9 +149,9 @@ local function run(cmd, opts)
   end, 10)
   if not finished then
     pcall(vim.fn.jobstop, job)
-    return { code = -1, stdout = table.concat(chunks, ""), timed_out = true }
+    return { code = -1, timed_out = true, out = out }
   end
-  return { code = exit_code, stdout = table.concat(chunks, ""), timed_out = false }
+  return { code = exit_code, timed_out = false, out = out }
 end
 
 -- Probe an object with a single `git cat-file --batch-check`.  Returns
@@ -164,21 +164,22 @@ local function probe(dir, object)
     return nil
   end
   -- "<oid> <type> <size>" on success, "<object> missing" otherwise.
-  local oid, otype, size = vim.trim(res.stdout):match("^(%x+)%s+(%S+)%s+(%d+)$")
+  local oid, otype, size = vim.trim(res.out[1] or ""):match("^(%x+)%s+(%S+)%s+(%d+)$")
   if not oid then
     return nil
   end
   return { oid = oid, type = otype, size = tonumber(size) }
 end
 
--- Read a blob by oid into a Lua string (bytes exact, NULs preserved).  No
--- shell, no temp file -- run() reconstructs the raw bytes from the channel.
+-- Read a blob by oid, returning jobstart's line list (or nil on error/timeout).
+-- No shell, no temp file, no byte reconstruction: the list is already the
+-- blob's lines (see run() for the NUL-in-item quirk we exploit in to_lines).
 local function read_blob(dir, oid)
   local res = run({ "git", "-C", dir, "cat-file", "blob", oid })
   if res.timed_out or res.code ~= 0 then
     return nil
   end
-  return res.stdout
+  return res.out
 end
 
 --------------------------------------------------------------------------------
@@ -276,22 +277,31 @@ local function locate(spec, cur_buf, cur_names)
   return { object_for_file(spec.rev, file) }, vim.fn.fnamemodify(file, ":t")
 end
 
--- Turn raw blob bytes into buffer lines, or nil if it looks binary.
-local function to_lines(data)
-  -- Binary guard, identical to git's own heuristic (buffer_is_binary): a NUL
-  -- byte within the first 8000 bytes.  We already hold the blob, so this needs
-  -- no extra git call; `git diff --numstat` would report the same thing (for
-  -- anything short of an explicit `binary` diff attribute) at the cost of
-  -- another process.
-  if data:sub(1, 8000):find("\0", 1, true) then
-    return nil
+-- Turn jobstart's stdout line list into buffer lines, or nil if it looks
+-- binary.  The list is already the blob split on real newlines, so there is no
+-- splitting to do -- we only spot NULs and trim the trailing-newline artifact.
+--
+-- Binary guard matching git's buffer_is_binary heuristic (a NUL within the
+-- first 8000 bytes): a NUL byte is delivered as "\n" *inside* a line item (real
+-- newlines are split points and never appear within an item), so a "\n" in any
+-- item, scanned over the first 8000 bytes, means binary.
+local function to_lines(items)
+  local scanned = 0
+  for _, item in ipairs(items) do
+    if item:find("\n", 1, true) then
+      return nil
+    end
+    scanned = scanned + #item + 1 -- +1 for the newline that ended this item
+    if scanned >= 8000 then
+      break
+    end
   end
-  local had_trailing_nl = data:sub(-1) == "\n"
-  local lines = vim.split(data, "\n", { plain = true })
-  if had_trailing_nl then
-    table.remove(lines)
+  -- git blobs normally end in "\n", which shows up as a trailing empty item;
+  -- drop it so we do not add a spurious blank final line (readfile semantics).
+  if #items > 0 and items[#items] == "" then
+    items[#items] = nil
   end
-  return lines
+  return items
 end
 
 --------------------------------------------------------------------------------
@@ -348,11 +358,11 @@ function M.try_infill(buf, cur_names)
     return false
   end
 
-  local data = read_blob(dir, info.oid)
-  if data == nil then
+  local raw = read_blob(dir, info.oid)
+  if raw == nil then
     return false
   end
-  local lines = to_lines(data)
+  local lines = to_lines(raw)
   if lines == nil then
     warn(object .. " looks binary; leaving as a new file")
     return false

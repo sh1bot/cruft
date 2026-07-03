@@ -240,6 +240,19 @@ case "$out" in
   *) bad "explicit rev:path from outside repo :: $out" ;;
 esac
 
+# 15. exact line reconstruction: trailing newline must not add a blank line,
+#     and a blob without a trailing newline must keep all its content.
+( cd "$WORK" && printf 'L1\nL2\nL3\n' > withnl.txt && printf 'only-line-no-nl' > nonl.txt \
+    && git add -A && git commit -qm lines >/dev/null )
+out="$(cd "$WORK" && run_nvim \
+  'vim.cmd("edit HEAD:withnl.txt"); local la=vim.api.nvim_buf_get_lines(0,0,-1,false);
+   vim.cmd("edit HEAD:nonl.txt");  local lb=vim.api.nvim_buf_get_lines(0,0,-1,false);
+   io.write("A="..#la.."/"..table.concat(la,",")..";B="..#lb.."/"..table.concat(lb,","))')"
+case "$out" in
+  *"A=3/L1,L2,L3;B=1/only-line-no-nl"*) ok "exact lines: trailing NL trimmed, missing NL preserved" ;;
+  *) bad "line reconstruction :: $out" ;;
+esac
+
 say ""
 say "$pass passed, $fail failed"
 [ "$fail" -eq 0 ]
