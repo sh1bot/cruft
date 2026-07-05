@@ -11,10 +11,13 @@ text  --encode-->  morse  --constrained generate-->  LM cover text
       <--decode--  morse  <--reverse-------------
 ```
 
-The generator is a backtracking constrained decoder: it does a best-first walk
-over the LM's tokens under the per-symbol constraint, and when a position
-dead-ends it backpedals and re-picks earlier tokens, so the whole message
-(including the trailing ender) is satisfied rather than greedily stranded.
+The generator is a backtracking constrained decoder: a best-first walk over the
+LM's tokens under the per-symbol constraint, backpedaling to re-pick earlier
+tokens whenever a position dead-ends, so the whole message (trailing ender
+included) is satisfied rather than greedily stranded.
+
+Everything lives in one file, `morse_stego.py`: the Morse codec, the model
+loader, the decoder, and the CLI.
 
 ## Run
 
@@ -31,17 +34,12 @@ Flags: `--prompt` (seed text), `--floor` (min per-token logprob; lower = more
 permissive), `--top-k` (candidates per position), `--budget` (max backtracking
 steps).
 
-## Files
-
-- `morse_stego.py` — the CLI: encode → generate → reverse → decode → verify.
-- `morse.py` — Morse codec and the token→symbol mapping shared by encode/decode.
-- `backtracking_hf.py` — the backtracking constrained decoder (`backtrack`).
-- `constrained_hf.py` — loads the LM (distilgpt2, or a tiny random GPT-2 offline).
-
 ## Requirements
 
-`torch`, `transformers`, `tokenizers`. With Hugging Face access the tool loads
-distilgpt2 and the cover text reads like (rough) English; offline it falls back
-to a tiny random GPT-2 — the text is gibberish but the constraint and the round
-trip are exactly the same. Longer strings need more constrained tokens, so very
-long inputs may report `INFEASIBLE`; raise `--top-k` or lower `--floor`.
+`torch`, `transformers`, `tokenizers` — but only the generation step imports
+them, so `--help` and the Morse codec stay import-light. With Hugging Face
+access the tool loads distilgpt2 and the cover text reads like (rough) English;
+offline it falls back to a tiny random GPT-2 — the text is gibberish but the
+constraint and the round trip are exactly the same. Longer strings need more
+constrained tokens, so very long inputs may report `INFEASIBLE`; raise
+`--top-k` or lower `--floor`.
