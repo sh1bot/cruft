@@ -29,6 +29,7 @@ import torch
 import torch.nn.functional as F
 
 from constrained_hf import tok, model
+from morse import wordtomorse, tokens_to_morse, morse_to_text, ENDERS
 
 
 @lru_cache(maxsize=None)
@@ -45,10 +46,12 @@ def _next_logprobs(ids):
 
 
 def greedy(prompt, length, allowed, top_k=50):
-    """Myopic baseline: argmax legal token each step. Returns (text, total_logp,
-    dead_ended). Stops early if a step has no legal candidate (dead_ended=True)."""
+    """Myopic baseline: argmax legal token each step. Returns (text, pieces,
+    total_logp, dead_ended), where `pieces` is the list of decoded generated
+    tokens. Stops early if a step has no legal candidate (dead_ended=True)."""
     ids = tok(prompt, return_tensors=None)["input_ids"]
     base, total = len(ids), 0.0
+    _ret = lambda dead: (tok.decode(ids), [_text(i) for i in ids[base:]], total, dead)
     for step in range(length):
         lp = _next_logprobs(ids)
         topv, topi = lp.topk(min(top_k, lp.shape[-1]))
@@ -58,9 +61,9 @@ def greedy(prompt, length, allowed, top_k=50):
                 pick = (i, v)
                 break                        # topk is sorted, first legal == argmax
         if pick is None:
-            return tok.decode(ids), total, True   # walked into a corner
+            return _ret(True)                # walked into a corner
         ids.append(pick[0]); total += pick[1]
-    return tok.decode(ids), total, False
+    return _ret(False)
 
 
 def backtrack(prompt, length, allowed, floor=-12.0, top_k=50, budget=20_000):
@@ -72,13 +75,15 @@ def backtrack(prompt, length, allowed, floor=-12.0, top_k=50, budget=20_000):
     top_k : how many of the vocab's best tokens to consider per position (the
             real vocab is ~50k; we never need the long tail).
 
-    Returns (text, total_logp, ok). Finds the first full-length legal sequence
-    in best-first order -- keeps the high-plausibility choices it can and only
+    Returns (text, pieces, total_logp, ok), where `pieces` is the list of
+    decoded generated tokens. Finds the first full-length legal sequence in
+    best-first order -- keeps the high-plausibility choices it can and only
     rewrites the ones that led into a corner.
     """
     start = tok(prompt, return_tensors=None)["input_ids"]
     ids = list(start)
     cum = [0.0]
+    _ret = lambda ok: (tok.decode(ids), [_text(i) for i in ids[len(start):]], cum[-1], ok)
 
     def candidates_at():
         step = len(ids) - len(start)         # tokens generated so far
@@ -92,17 +97,17 @@ def backtrack(prompt, length, allowed, floor=-12.0, top_k=50, budget=20_000):
     steps = 0
     while len(ids) - len(start) < length:
         if (steps := steps + 1) > budget:
-            return tok.decode(ids), cum[-1], False
+            return _ret(False)
         frame = stack[-1]
         if not frame:                        # dead-end -> backpedal one level
             if len(ids) == len(start):
-                return tok.decode(ids), cum[-1], False   # backed past prompt: infeasible
+                return _ret(False)           # backed past prompt: infeasible
             ids.pop(); cum.pop(); stack.pop()
             continue
         t, lp = frame.pop(0)                 # take & consume best remaining sibling
         ids.append(t); cum.append(cum[-1] + lp)
         stack.append(candidates_at())
-    return tok.decode(ids), cum[-1], True
+    return _ret(True)
 
 
 if __name__ == "__main__":
@@ -121,12 +126,12 @@ if __name__ == "__main__":
         return True
 
     LEN = 8
-    gtext, gtot, dead = greedy(PROMPT, LEN, no_e_then_stop)
+    gtext, _, gtot, dead = greedy(PROMPT, LEN, no_e_then_stop)
     print("greedy (no lookahead):")
     print(f"   {gtext!r}")
     print(f"   total logprob {gtot:7.2f}   {'DEAD-ENDED early' if dead else 'ok'}\n")
 
-    btext, btot, ok = backtrack(PROMPT, LEN, no_e_then_stop)
+    btext, _, btot, ok = backtrack(PROMPT, LEN, no_e_then_stop)
     print("backtracking:")
     print(f"   {btext!r}")
     print(f"   total logprob {btot:7.2f}   {'ok' if ok else 'INFEASIBLE'}")
@@ -139,8 +144,9 @@ if __name__ == "__main__":
     # plenty of vowel- and consonant-final tokens, so backtrack can satisfy it.
     # Note 'y' is deliberately in NEITHER class, so y-final tokens map to ' '
     # (the target for the spaces between letters in the message).
+    # wordtomorse is imported from morse.py -- the SAME mapping the reverse
+    # parser uses, so encoding and decoding can't drift apart.
     message = "... . -.-. .-. . - -- . ... ... .- --. ."
-    ENDERS = {".", "?", "!"}
 
     def morse_then_end(t, step):
         # Steps 0..len(message)-1 reproduce the message one symbol per token; the
@@ -149,18 +155,16 @@ if __name__ == "__main__":
         # constraint, an unreachable ender forces it to rewrite morse tokens.
         if step >= len(message):             # postcondition slot (>= keeps the
             return t.strip() in ENDERS       # one extra probe past the end safe)
-        def wordtomorse(word):
-            word = word.strip()
-            if not word:
-                return ' '
-            last = word[-1].lower()
-            if last in "aeiou": return '.'
-            if last in "bcdfghjklmnpqrstvwxz": return '-'   # no 'y' -> some map to ' '
-            return ' '
         return wordtomorse(t) == message[step]
 
     # len(message) morse tokens + 1 sentence-ender = len(message)+1 tokens total.
-    mtext, mtot, ok = backtrack(PROMPT, len(message) + 1, morse_then_end, floor=-15.0)
+    mtext, pieces, mtot, ok = backtrack(PROMPT, len(message) + 1, morse_then_end, floor=-15.0)
     print("morse + sentence-ender postcondition on the real LM:")
     print(f"   {mtext!r}")
     print(f"   total logprob {mtot:7.2f}   {'ok' if ok else 'INFEASIBLE'}")
+
+    # Reverse the generated tokens back to morse, then decode morse to text.
+    recovered = tokens_to_morse(pieces)      # OUTPUT -> morse (drops the ender)
+    print(f"   reversed to morse : {recovered!r}")
+    print(f"   round-trips        : {recovered == message}")
+    print(f"   decoded to text    : {morse_to_text(recovered)!r}")
