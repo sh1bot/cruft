@@ -140,8 +140,15 @@ if __name__ == "__main__":
     # Note 'y' is deliberately in NEITHER class, so y-final tokens map to ' '
     # (the target for the spaces between letters in the message).
     message = "... . -.-. .-. . - -- . ... ... .- --. ."
+    ENDERS = {".", "?", "!"}
 
-    def morse_filter(t, step):
+    def morse_then_end(t, step):
+        # Steps 0..len(message)-1 reproduce the message one symbol per token; the
+        # extra final token (step == len(message)) is the postcondition -- it must
+        # end the sentence. Because backtrack scores and searches over this whole
+        # constraint, an unreachable ender forces it to rewrite morse tokens.
+        if step >= len(message):             # postcondition slot (>= keeps the
+            return t.strip() in ENDERS       # one extra probe past the end safe)
         def wordtomorse(word):
             word = word.strip()
             if not word:
@@ -150,11 +157,10 @@ if __name__ == "__main__":
             if last in "aeiou": return '.'
             if last in "bcdfghjklmnpqrstvwxz": return '-'   # no 'y' -> some map to ' '
             return ' '
-        bip = message[step % len(message)]
-        return wordtomorse(t) == bip
+        return wordtomorse(t) == message[step]
 
-    # One generated token per symbol in the message -> exactly len(message) long.
-    mtext, mtot, ok = backtrack(PROMPT, len(message), morse_filter, floor=-15.0)
-    print("morse_filter on the real LM:")
+    # len(message) morse tokens + 1 sentence-ender = len(message)+1 tokens total.
+    mtext, mtot, ok = backtrack(PROMPT, len(message) + 1, morse_then_end, floor=-15.0)
+    print("morse + sentence-ender postcondition on the real LM:")
     print(f"   {mtext!r}")
     print(f"   total logprob {mtot:7.2f}   {'ok' if ok else 'INFEASIBLE'}")
