@@ -82,12 +82,28 @@ def morse_to_text(morse):
     return " ".join(words)
 
 
-def text_to_morse(text):
-    """Encode text to a morse string (letters space-separated, words by ' / ')."""
+def normalize(text):
+    """Uppercase and keep only morse-encodable characters, collapsing whitespace
+    to single word breaks. This is exactly what a decoded round trip can
+    reproduce (morse is case-insensitive and has only the table's characters)."""
+    words = []
+    for word in text.upper().split():
+        kept = "".join(c for c in word if c in MORSE)
+        if kept:
+            words.append(kept)
+    return " ".join(words)
+
+
+def text_to_morse(text, word_sep=" / "):
+    """Encode text to a morse string (letters space-separated, words by word_sep).
+
+    Default word_sep is ' / '. Pass '   ' (three spaces) when the string must
+    consist of only dots, dashes and spaces -- e.g. to drive a token-per-symbol
+    constraint that has no way to emit a '/'. morse_to_text decodes both."""
     words = []
     for word in text.upper().split():
         words.append(" ".join(MORSE.get(ch, "?") for ch in word))
-    return " / ".join(words)
+    return word_sep.join(words)
 
 
 if __name__ == "__main__":
