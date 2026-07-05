@@ -1,35 +1,29 @@
 """
-Backtracking constrained decoder on a REAL language model.
+Backtracking constrained decoder on a real language model.
 
-Same best-first-DFS-with-backpedaling as backtracking.py, but the per-step
-scores now come from a pretrained LM (distilgpt2 via constrained_hf.py) instead
-of the toy word-bigram. Two things change because of that:
+Best-first DFS with backpedaling over token ids from a pretrained LM
+(distilgpt2 via constrained_hf.py). Each node runs one forward pass to get
+next-token log-probs over the full vocab, keeps the top-k, drops anything below
+the plausibility `floor`, and filters what survives through a constraint:
 
-  * The search walks over token *ids*, not whole words. Each node runs one
-    forward pass to get next-token log-probs over the full vocab, keeps the
-    top-k, drops anything below the plausibility `floor`, and filters what
-    survives through your constraint.
+    allowed(token_text, step) -> bool
 
-  * The constraint contract matches constrained_hf.py, NOT backtracking.py:
+`token_text` is the decoded candidate token (GPT-2 style, often with a leading
+space); `step` is how many tokens have been generated so far. When a position
+dead-ends (no surviving candidate), the search pops the last token and tries
+the next-best sibling, cascading back as far as needed -- so it keeps the
+high-plausibility choices it can and only rewrites the ones that led into a
+corner.
 
-        allowed(token_text, step) -> bool
-
-    `token_text` is the decoded candidate token (GPT-2 style, often with a
-    leading space); `step` is how many tokens we've generated so far. This is
-    the exact signature TokenAllowProcessor uses, so a constraint you wrote for
-    constrained_hf.py drops straight in here -- including morse_filter(t, step).
-
-Run:  python3 backtracking_hf.py
+Used by morse_stego.py.
 """
 
-import math
 from functools import lru_cache
 
 import torch
 import torch.nn.functional as F
 
 from constrained_hf import tok, model
-from morse import wordtomorse, tokens_to_morse, morse_to_text, ENDERS
 
 
 @lru_cache(maxsize=None)
@@ -43,27 +37,6 @@ def _next_logprobs(ids):
     with torch.no_grad():
         logits = model(torch.tensor([ids])).logits[0, -1]
     return F.log_softmax(logits, dim=-1)
-
-
-def greedy(prompt, length, allowed, top_k=50):
-    """Myopic baseline: argmax legal token each step. Returns (text, pieces,
-    total_logp, dead_ended), where `pieces` is the list of decoded generated
-    tokens. Stops early if a step has no legal candidate (dead_ended=True)."""
-    ids = tok(prompt, return_tensors=None)["input_ids"]
-    base, total = len(ids), 0.0
-    _ret = lambda dead: (tok.decode(ids), [_text(i) for i in ids[base:]], total, dead)
-    for step in range(length):
-        lp = _next_logprobs(ids)
-        topv, topi = lp.topk(min(top_k, lp.shape[-1]))
-        pick = None
-        for v, i in zip(topv.tolist(), topi.tolist()):
-            if allowed(_text(i), step):
-                pick = (i, v)
-                break                        # topk is sorted, first legal == argmax
-        if pick is None:
-            return _ret(True)                # walked into a corner
-        ids.append(pick[0]); total += pick[1]
-    return _ret(False)
 
 
 def backtrack(prompt, length, allowed, floor=-12.0, top_k=50, budget=20_000):
@@ -108,63 +81,3 @@ def backtrack(prompt, length, allowed, floor=-12.0, top_k=50, budget=20_000):
         ids.append(t); cum.append(cum[-1] + lp)
         stack.append(candidates_at())
     return _ret(True)
-
-
-if __name__ == "__main__":
-    PROMPT = "The weather today is"
-
-    # A constraint that corners greedy: no token containing the letter 'e', AND
-    # after 6 tokens only a sentence-ender is legal. Greedy happily spends its
-    # first 6 tokens with no thought to how it will terminate and can strand
-    # itself with no legal 'e'-free ender in reach; backtrack rewrites earlier
-    # picks until an ending is possible.
-    def no_e_then_stop(text, step):
-        if "e" in text.lower():
-            return False
-        if step >= 6:
-            return text.strip() in {".", "!", "?"}
-        return True
-
-    LEN = 8
-    gtext, _, gtot, dead = greedy(PROMPT, LEN, no_e_then_stop)
-    print("greedy (no lookahead):")
-    print(f"   {gtext!r}")
-    print(f"   total logprob {gtot:7.2f}   {'DEAD-ENDED early' if dead else 'ok'}\n")
-
-    btext, _, btot, ok = backtrack(PROMPT, LEN, no_e_then_stop)
-    print("backtracking:")
-    print(f"   {btext!r}")
-    print(f"   total logprob {btot:7.2f}   {'ok' if ok else 'INFEASIBLE'}")
-    if ok and (dead or btot >= gtot):
-        gain = "reached full length" if dead else f"+{btot - gtot:.2f} logprob"
-        print(f"   -> backpedaling recovered a legal path ({gain}).\n")
-
-    # Full circle: the morse constraint from before, now on the real LM. Tokens
-    # are subwords, so "last letter" is the token's last letter; there are
-    # plenty of vowel- and consonant-final tokens, so backtrack can satisfy it.
-    # Note 'y' is deliberately in NEITHER class, so y-final tokens map to ' '
-    # (the target for the spaces between letters in the message).
-    # wordtomorse is imported from morse.py -- the SAME mapping the reverse
-    # parser uses, so encoding and decoding can't drift apart.
-    message = "... . -.-. .-. . - -- . ... ... .- --. ."
-
-    def morse_then_end(t, step):
-        # Steps 0..len(message)-1 reproduce the message one symbol per token; the
-        # extra final token (step == len(message)) is the postcondition -- it must
-        # end the sentence. Because backtrack scores and searches over this whole
-        # constraint, an unreachable ender forces it to rewrite morse tokens.
-        if step >= len(message):             # postcondition slot (>= keeps the
-            return t.strip() in ENDERS       # one extra probe past the end safe)
-        return wordtomorse(t) == message[step]
-
-    # len(message) morse tokens + 1 sentence-ender = len(message)+1 tokens total.
-    mtext, pieces, mtot, ok = backtrack(PROMPT, len(message) + 1, morse_then_end, floor=-15.0)
-    print("morse + sentence-ender postcondition on the real LM:")
-    print(f"   {mtext!r}")
-    print(f"   total logprob {mtot:7.2f}   {'ok' if ok else 'INFEASIBLE'}")
-
-    # Reverse the generated tokens back to morse, then decode morse to text.
-    recovered = tokens_to_morse(pieces)      # OUTPUT -> morse (drops the ender)
-    print(f"   reversed to morse : {recovered!r}")
-    print(f"   round-trips        : {recovered == message}")
-    print(f"   decoded to text    : {morse_to_text(recovered)!r}")

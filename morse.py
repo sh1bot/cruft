@@ -61,7 +61,7 @@ def tokens_to_morse(pieces, strip_ender=True):
     """Reverse generator output back to the morse string.
 
     pieces      : the list of decoded generated tokens (no prompt), e.g. the
-                  `pieces` returned by backtrack()/greedy().
+                  `pieces` returned by backtrack().
     strip_ender : drop a trailing sentence-ender token (the postcondition slot);
                   it is not part of the morse message.
     """
