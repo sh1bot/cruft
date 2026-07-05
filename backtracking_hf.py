@@ -137,6 +137,10 @@ if __name__ == "__main__":
     # Full circle: the morse constraint from before, now on the real LM. Tokens
     # are subwords, so "last letter" is the token's last letter; there are
     # plenty of vowel- and consonant-final tokens, so backtrack can satisfy it.
+    # Note 'y' is deliberately in NEITHER class, so y-final tokens map to ' '
+    # (the target for the spaces between letters in the message).
+    message = "... . -.-. .-. . - -- . ... ... .- --. ."
+
     def morse_filter(t, step):
         def wordtomorse(word):
             word = word.strip()
@@ -144,13 +148,13 @@ if __name__ == "__main__":
                 return ' '
             last = word[-1].lower()
             if last in "aeiou": return '.'
-            if last in "bcdfghjklmnpqrstvwxyz": return '-'
+            if last in "bcdfghjklmnpqrstvwxz": return '-'   # no 'y' -> some map to ' '
             return ' '
-        message = "... . -.-. .-. . - -- . ... ... .- --. ."
         bip = message[step % len(message)]
         return wordtomorse(t) == bip
 
-    mtext, mtot, ok = backtrack(PROMPT, 10, morse_filter, floor=-15.0)
+    # One generated token per symbol in the message -> exactly len(message) long.
+    mtext, mtot, ok = backtrack(PROMPT, len(message), morse_filter, floor=-15.0)
     print("morse_filter on the real LM:")
     print(f"   {mtext!r}")
     print(f"   total logprob {mtot:7.2f}   {'ok' if ok else 'INFEASIBLE'}")
