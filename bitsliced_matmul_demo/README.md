@@ -1,84 +1,57 @@
-# Bit-sliced matrix multiply (NEON-flavoured, in Python)
+# Tiny bit-sliced matrix multiply demo
 
-A worked implementation of the hypothetical SIMD primitive from
-**[tikouka.dev/bitwise-matrix-multiply](https://www.tikouka.dev/bitwise-matrix-multiply)**,
-with a correctness test and a side-by-side comparison against a conventional
-NEON multiply-accumulate matmul. Pure Python/numpy, but written against a
-faithful simulation of the Arm NEON 128-bit intrinsics, using NEON names.
+This directory contains a deliberately small Python/numpy illustration of two
+ways to compute the same **8×8 `uint8` matrix multiply**:
 
-## The proposed instruction
+* `conventional_matmul(A, B)` uses functions in `neon_sim.py` that emulate Arm
+  NEON-style loads, broadcasts, widening multiplies, widening moves, adds, and
+  stores.
+* `bitsliced_matmul(A, B, planes_used=8)` slices `A` into bit planes and uses a
+  hypothetical `vbitmul_u8` instruction to multiply one 8×8 one-bit tile by one
+  8-value `uint8` vector.
 
-> *Like matrix multiply, but one argument is a vector of 8-bit values, and the
-> other a vector of 64 1-bit values … a vector of conditional sums of eight
-> different eight-bit inputs.*
+The code is intentionally constrained to 8×8 matrices so the loop structure is
+easy to read.
 
-```
-  Vsrc1 = a    : uint8x8_t   eight shared 8-bit values  a0..a7
-  Vsrc0 = mask : uint8x8_t   64 bits as 8 lanes x 8 bits; lane g selects a_n
-  Vdst         : uint16x8_t   eight 11-bit conditional sums
+## The hypothetical instruction
 
-  Vdst[g] = Σ_{n=0..7} ((mask[g] >> n) & 1) * a[n]
-```
+```text
+Vsrc1 = a    : uint8x8_t   eight shared 8-bit values, a0..a7
+Vsrc0 = mask : uint8x8_t   eight lanes, each lane holding eight selector bits
+Vdst         : uint16x8_t  eight conditional sums
 
-It's one 8×8 tile of a matmul where **one operand is a single bit and the
-other keeps its full 8-bit magnitude** — so it is a *masked add*, **not** a
-popcount. `neon_sim.vbitmul_u8` models it (and `vbitmla_u8`, the accumulating
-form). It is hypothetical — not in `arm_neon.h`.
-
-## Building a full matmul `C = A @ B`
-
-Slice **one** operand (here `A`) into bit-planes. For a fixed output column
-`n0` and a tile of 8 output rows:
-
-* `Vsrc1` = `B[k0:k0+8, n0]` — 8 values along K, shared by all 8 rows;
-* `Vsrc0` lane `g` = bits `A_p[m0+g, k0:k0+8]` of bit-plane `p`.
-
-One `vbitmul_u8` then does an 8×8 tile of partial products per plane —
-*"eight multiply-accumulates for the price of one."* Accumulate over K, then
-combine the planes with a weighted shift-add **outside** the inner loop:
-
-```
-C[m,n] = Σ_p  weight[p] * ( Σ_k A_p[m,k] * B[k,n] )
+Vdst[g] = sum_k ((mask[g] >> k) & 1) * a[k]
 ```
 
-Because the weights live outside the loop they can be anything:
+This is a masked sum, not a popcount: selected `uint8` values keep their full
+magnitude.
 
-| `encoding`   | weights        | use                                   |
-|--------------|----------------|---------------------------------------|
-| `unsigned`   | `2^p`          | unsigned A                            |
-| `twos`       | MSB → `-2^(n-1)`| signed A (two's complement)          |
-| `negabinary` | `(-2)^p`       | signed A; high planes vanish for small |values
+## Why the bitsliced loop is written this way
 
-And **early-exit**: `planes_used=P` keeps the `P` most-significant planes,
-dropping A's low bits — fewer bits of precision for proportionally less work
-(graceful degradation, e.g. 6 of 8 planes → exact here, 4 → ~5% error).
+`bitsliced_matmul()` puts the bit-plane loop outermost:
+
+```python
+for bit in range(7, first_plane - 1, -1):
+    ...
+```
+
+That makes reduced precision visible.  `planes_used=4`, for example, processes
+only bits 7, 6, 5, and 4 of `A`; bits 3..0 are ignored.  The result is exactly
+what you would get from multiplying `B` by `A` after zeroing those low bits.
 
 ## Files
 
-| file                  | what                                                                 |
-|-----------------------|----------------------------------------------------------------------|
-| `neon_sim.py`         | NEON intrinsics over numpy lane-vectors — incl. the proposed `vbitmul_u8` |
-| `bitsliced_matmul.py` | the bit-sliced matmul (encodings + early-exit) and the conventional `vmull`/`vmovl`/`vaddq` MAC kernel |
-| `test_matmul.py`      | correctness: primitive, both kernels vs int64 reference, signed encodings, early-exit |
-| `demo.py`             | worked example + op-count comparison                                 |
+| file | purpose |
+| --- | --- |
+| `neon_sim.py` | Small NEON intrinsic simulator plus the hypothetical `vbitmul_u8`. |
+| `bitsliced_matmul.py` | The two 8×8 kernels and an exact reference. |
+| `test_matmul.py` | Tests for the primitive, both kernels, and early exit. |
+| `demo.py` | Prints a worked 8×8 example. |
 
 ## Run
 
-```
-pip install numpy pytest
-python -m pytest test_matmul.py -q     # 64 passed
-python demo.py
-```
-
-## Scope / notes
-
-- The triple loop in `bitsliced_matmul` is illustrative, not optimised; a real
-  kernel tiles M/N and keeps planes in registers.
-- `B` is the full-magnitude 8-bit operand (unsigned here). A's signedness is
-  carried entirely by the per-plane weights, exactly as the article suggests; a
-  signed-`B` variant (`vbitmul_s8`) is a straightforward extension.
-- The article's further ideas — high/low 4-bit split for accumulation headroom,
-  self-contained 64×64 chunking beyond 64-bit vectors, non-power-of-two weights
-  for approximation/compression — are noted there but left out of this minimal
-  demo, except that the weight machinery already supports arbitrary weights.
+```sh
+pip install -r bitsliced_matmul_demo/requirements.txt
+python -m pytest bitsliced_matmul_demo/test_matmul.py -q
+python bitsliced_matmul_demo/demo.py
 ```
