@@ -76,16 +76,23 @@ def bitsliced_matmul(A, B, planes_used=UINT8_BITS):
     B = _as_u8_8x8("B", B)
     assert 0 <= planes_used <= UINT8_BITS, "planes_used must be in [0, 8]"
 
-    C = np.zeros((SIZE, SIZE), dtype=np.int64)
     first_plane = UINT8_BITS - planes_used
 
+    # Pack each retained bit-plane of A into the masks consumed by vbitmul_u8.
+    # mask_by_bit[bit, m] bit k == bit(A[m, k], bit).  Keeping this as its
+    # own loop makes the bit-sliced data rearrangement separate from the
+    # multiply/accumulate loop below.
+    mask_by_bit = np.zeros((UINT8_BITS, SIZE), dtype=np.uint8)
+    for bit in range(UINT8_BITS - 1, first_plane - 1, -1):
+        for k in range(SIZE):
+            mask_by_bit[bit] |= (((A[:, k] >> bit) & 1) << k).astype(np.uint8)
+
+    C = np.zeros((SIZE, SIZE), dtype=np.int64)
     for bit in range(UINT8_BITS - 1, first_plane - 1, -1):
         weight = 1 << bit
+        mask = mask_by_bit[bit]
         for n in range(SIZE):
             bcol = B[:, n]
-            mask = np.zeros(SIZE, dtype=np.uint8)
-            for k in range(SIZE):
-                mask |= (((A[:, k] >> bit) & 1) << k).astype(np.uint8)
             partial = ns.vbitmul_u8(mask, bcol).astype(np.int64)
             C[:, n] += weight * partial
     return C
